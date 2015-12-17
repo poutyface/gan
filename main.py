@@ -7,7 +7,7 @@ from chainer import Chain
 from chainer import optimizers
 import cv2
 
-nbatch = 5
+nbatch = 10
 nz = 100
 nc = 3
 ngf = 128
@@ -41,7 +41,7 @@ class Gan(Chain):
         x = self.forward(z)
         return x.data
 
-    def forward(self, x):
+    def __call__(self, x):
         # h1 = F.relu(self.g_bn1(self.g_l1(x)))
         # h2 = F.reshape(h1, (h1.data.shape[0],ngf*8, 4, 4))
         # h3 = F.relu(self.g_bn2(self.deconv1(h2)))
@@ -80,7 +80,7 @@ class Disc(Chain):
             l2 = L.Linear(1024, 1)
         )
 
-    def forward(self, x, y):
+    def __call__(self, x):
         h1 = F.leaky_relu(self.conv1(x))
         h2 = F.leaky_relu(self.conv2(h1))
         h3 = F.leaky_relu(self.conv3(h2))
@@ -89,7 +89,7 @@ class Disc(Chain):
         h5 = self.l1(h4)
         h6 = self.l2(h5)
         print h6.data
-        h7 = F.sigmoid_cross_entropy(h6, y)
+        #h7 = F.sigmoid_cross_entropy(h6, y)
 
         print x.data.shape
         print h1.data.shape
@@ -98,7 +98,7 @@ class Disc(Chain):
         print h4.data.shape
         print h5.data.shape
         print h6.data.shape
-        return h7
+        return h6
 
 
 def image_samples(nbatch):
@@ -116,47 +116,50 @@ def image_samples(nbatch):
 
 
 print "---"
-gan = Gan()
-disc = Disc()
+gen = Gan()
+dis = Disc()
 g_opt = optimizers.Adam(alpha=0.0002, beta1=0.5)
 d_opt = optimizers.Adam(alpha=0.0002, beta1=0.5)
-g_opt.setup(gan)
-d_opt.setup(disc)
+g_opt.setup(gen)
+d_opt.setup(dis)
+g_opt.add_hook(chainer.optimizer.WeightDecay(0.00001))
+d_opt.add_hook(chainer.optimizer.WeightDecay(0.00001))
 
-example_z = gan.make_z(nbatch)
+example_z = gen.make_z(nbatch)
 
 for epoch in range(50000):
     print "epoch:", epoch
-    gan.zerograds()
-    disc.zerograds()
 
     xmb = image_samples(nbatch)
-    #zmb = gan.generate(gan.make_z(nbatch))
-    zmb = gan.generate(example_z)
-    x = np.concatenate((xmb, zmb), axis=0)
-    xy = np.ones((nbatch, 1), dtype=np.int32)
-    zy = np.zeros((nbatch, 1), dtype=np.int32)
-    y = np.concatenate((xy, zy), axis=0)
-    d_loss = disc.forward(chainer.Variable(x), chainer.Variable(y))
-    print "d_loss:", d_loss.data
-    if d_loss.data > 0.38:
-        d_loss.backward()
-        d_opt.update()
 
-    gan.zerograds()
-    disc.zerograds()
+    x = gen(chainer.Variable(gen.make_z(nbatch)))
+    y1 = dis(x)
+    l_gen = F.sigmoid_cross_entropy(y1, chainer.Variable(np.ones((nbatch, 1), dtype=np.int32)))
+    l1_dis = F.sigmoid_cross_entropy(y1, chainer.Variable(np.zeros((nbatch, 1), dtype=np.int32)))
 
-    #z = gan.forward(chainer.Variable(gan.make_z(nbatch)))
-    z = gan.forward(chainer.Variable(example_z))
-    y = chainer.Variable(np.ones((nbatch, 1), dtype=np.int32))
-    g_loss = disc.forward(z, y)
-    print "g_loss:", g_loss.data
-    if d_loss.data < 0.7:
-        g_loss.backward()
+    x2 = chainer.Variable(xmb)
+    y2 = dis(x2)
+    l2_dis = F.sigmoid_cross_entropy(y2, chainer.Variable(np.ones((nbatch, 1), dtype=np.int32)))
+    l_dis = l1_dis + l2_dis
+
+    print "loss gen:", l_gen.data
+    print "loss dis1:", l1_dis.data
+    print "loss dis2:", l2_dis.data
+
+    gen.zerograds()
+    dis.zerograds()
+
+    margin = 0.25
+    if l2_dis.data < margin:
+        l_gen.backward()
         g_opt.update()
 
-    #img = gan.generate(gan.make_z(nbatch))
-    img = gan.generate(example_z)
+    if l1_dis.data > (1.0-margin) or l2_dis.data > margin:
+        l_dis.backward()
+        d_opt.update()
+
+
+    img = gen(chainer.Variable(example_z)).data
     img = (img * 127.5) + 127.5
     print img.shape
     img = img.reshape(-1, nc, 79, 79)
